@@ -116,28 +116,22 @@ def cache_landmarks(face_hash):
     return None  # Placeholder for actual landmark caching logic
 
 def process_frame_logic(frame):
-    """Process a single frame and return distraction status with memory optimization."""
-    global pose_estimator
+    """Process a single frame and return distraction status."""
+    global pose_estimator, eye_gaze_detector
 
     try:
         if pose_estimator is None:
             pose_estimator = PoseEstimator(frame.shape[1], frame.shape[0])
 
-        # Run face detection with error handling
+        # Run face detection
         faces, _ = face_detector.detect(frame, 0.7)
         combined_distraction = False
 
         if len(faces) > 0:
-            # Process only the first face to save resources
             face = refine(faces[:1], frame.shape[1], frame.shape[0], 0.15)[0]
             x1, y1, x2, y2 = face[:4].astype(int)
-
-            # Extract face patch with bounds checking
-            x1, x2 = max(0, x1), min(frame.shape[1], x2)
-            y1, y2 = max(0, y1), min(frame.shape[0], y2)
             patch = frame[y1:y2, x1:x2]
 
-            # Skip if face patch is too small
             if patch.size == 0:
                 return "Distracted"
 
@@ -147,27 +141,27 @@ def process_frame_logic(frame):
             marks[:, 0] += x1
             marks[:, 1] += y1
 
+            # Head pose distraction check
             head_distraction, _ = pose_estimator.detect_distraction(marks)
 
-            eye_distraction, gaze_direction = eye_gaze_detector.detect_distraction(marks, frame.shape[1], frame.shape[0])
+            # Use API-based gaze detection
+            eye_distraction, gaze_direction = eye_gaze_detector.detect_distraction(frame)
 
-            # Combine distraction results
+            # Combine results
             combined_distraction = head_distraction or eye_distraction
 
-            # Emit gaze direction with reduced frequency
-            if time() % 2 < 0.1:  # Only emit every ~2 seconds
-                emit('gaze_direction', {'direction': gaze_direction})
+            # Emit gaze direction
+            emit('gaze_direction', {'direction': gaze_direction})
+
         else:
             combined_distraction = True
 
         return "Distracted" if combined_distraction else "Focused"
 
-    except MemoryError:
-        logger.error("Memory error in process_frame_logic")
-        return "System busy"
     except Exception as e:
-        logger.error(f"Error in process_frame_logic: {e}")
+        print(f"Error in process_frame_logic: {e}")
         return "Error"
+
 
 @socketio.on('connect')
 def handle_connect():
@@ -213,3 +207,6 @@ def handle_frame(data):
 @app.route("/health", methods=["GET"])
 def health():
     return "OK", 200
+
+if __name__ == "__main__":
+    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
