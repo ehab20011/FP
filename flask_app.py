@@ -1,7 +1,7 @@
 import base64
 import cv2
 import numpy as np
-from flask import Flask
+from flask import Flask, request
 from face_detection import FaceDetector
 from mark_detection import MarkDetector
 from pose_estimation import PoseEstimator
@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from time import time
-from functools import lru_cache
 import logging
 
 # Configure logging
@@ -71,8 +70,8 @@ except Exception as e:
     logger.error(f"Error initializing models: {e}")
     raise
 
-# Global variables for frame processing
-last_frame_time = 0
+# store the states for each client sid that joins
+client_states = {}
 
 def resize_frame(frame):
     """Resize frame to target resolution while maintaining aspect ratio."""
@@ -105,15 +104,13 @@ def resize_frame(frame):
 
     return canvas
 
-def process_frame_logic(frame):
-    """Process a single frame and return distraction status."""
-    global pose_estimator, eye_gaze_detector
-
+def process_frame_logic(frame, sid):
     try:
-        if pose_estimator is None:
-            pose_estimator = PoseEstimator(frame.shape[1], frame.shape[0])
+        state = client_states[sid]
 
-        # Run face detection
+        if state['pose_estimator'] is None:
+            state['pose_estimator'] = PoseEstimator(frame.shape[1], frame.shape[0])
+
         faces, _ = face_detector.detect(frame, 0.7)
         combined_distraction = False
 
@@ -125,22 +122,15 @@ def process_frame_logic(frame):
             if patch.size == 0:
                 return "Distracted"
 
-            # Detect landmarks
             marks = mark_detector.detect([patch])[0].reshape([68, 2])
             marks *= (x2 - x1)
             marks[:, 0] += x1
             marks[:, 1] += y1
 
-            # Head pose distraction check
-            head_distraction, _ = pose_estimator.detect_distraction(marks)
-
-            # Use API-based gaze detection
+            head_distraction, _ = state['pose_estimator'].detect_distraction(marks)
             eye_distraction, gaze_direction = eye_gaze_detector.detect_distraction(frame)
 
-            # Combine results
             combined_distraction = head_distraction or eye_distraction
-
-            # Emit gaze direction
             emit('gaze_direction', {'direction': gaze_direction})
 
         else:
@@ -149,45 +139,45 @@ def process_frame_logic(frame):
         return "Distracted" if combined_distraction else "Focused"
 
     except Exception as e:
-        print(f"Error in process_frame_logic: {e}")
+        logger.error(f"Error in process_frame_logic: {e}")
         return "Error"
 
 
 @socketio.on('connect')
 def handle_connect():
-    print('Client connected')
+    sid = request.sid
+    client_states[sid] = {
+        'last_frame_time': 0,
+        'pose_estimator': None
+    }
+    print(f'Client connected: {sid}')
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    print('Client disconnected')
+    sid = request.sid
+    client_states.pop(sid, None)
+    print(f'Client disconnected: {sid}')
 
 @socketio.on('frame')
 def handle_frame(data):
-    """Handle incoming frame data through WebSocket with optimizations."""
-    global last_frame_time
+    sid = request.sid
+    state = client_states.get(sid)
+    if not state:
+        logger.error(f"No state found for sid {sid}")
+        return
 
     current_time = time()
-
-    # Frame rate limiting (15 FPS to reduce resource usage)
-    if current_time - last_frame_time < FRAME_INTERVAL:
-        return  # Skip frame if too soon
+    if current_time - state['last_frame_time'] < FRAME_INTERVAL:
+        return
 
     try:
-        # Decode the base64-encoded frame
         img = np.frombuffer(base64.b64decode(data['frame']), np.uint8)
         frame = cv2.imdecode(img, cv2.IMREAD_COLOR)
-
-        # Resize frame for faster processing
         resized_frame = resize_frame(frame)
 
-        # Process frame and get focus status
-        focus_status = process_frame_logic(resized_frame)
-
-        # Emit the focus status back to the client
+        focus_status = process_frame_logic(resized_frame, sid)
         emit('focus_status', {'status': focus_status})
-
-        # Update last frame time
-        last_frame_time = current_time
+        state['last_frame_time'] = current_time
 
     except Exception as e:
         logger.error(f"Error in handle_frame: {e}")
