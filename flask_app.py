@@ -1,23 +1,18 @@
 import base64
 import cv2
 import numpy as np
-from flask import Flask, request, jsonify
+from flask import Flask
 from face_detection import FaceDetector
 from mark_detection import MarkDetector
 from pose_estimation import PoseEstimator
 from eye_gaze import EyeGazeDetector
 from utils import refine
 import os
-import threading
-import queue
 from dotenv import load_dotenv
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from time import time
 from functools import lru_cache
-import hashlib
-import zlib
-import psutil
 import logging
 
 # Configure logging
@@ -109,11 +104,6 @@ def resize_frame(frame):
     canvas[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = resized
 
     return canvas
-
-@lru_cache(maxsize=100)
-def cache_landmarks(face_hash):
-    """Cache landmarks for similar face regions."""
-    return None  # Placeholder for actual landmark caching logic
 
 def process_frame_logic(frame):
     """Process a single frame and return distraction status."""
@@ -209,4 +199,4 @@ def health():
     return "OK", 200
 
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
+    socketio.run(app, host="0.0.0.0", port=5001, debug=True)
